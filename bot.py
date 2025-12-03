@@ -1,21 +1,10 @@
-"""
-Telegram бот для изучения английского языка.
-Основной модуль бота с обработчиками команд.
-"""
-
 import logging
 import random
-from datetime import datetime
-from typing import Dict, Any, Optional
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters
-)
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-from config import BOT_TOKEN, ADMIN_IDS
-from repository import Repository
+from config import BOT_TOKEN
+from database import Database
 
 # Настройка логирования
 logging.basicConfig(
@@ -24,433 +13,394 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Инициализация репозитория
-repo = Repository()
+# Инициализация базы данных
+db = Database()
 
-# Глобальные переменные для хранения состояния
-user_states: Dict[int, Dict[str, Any]] = {}
+# Словари для хранения состояния пользователей
+user_states = {}  # {user_id: {'expecting_english': True/False, 'expecting_russian': True/False}}
 
+# ========== КОМАНДЫ ==========
 
-def get_user_state(user_id: int) -> Dict[str, Any]:
-    """Получение или создание состояния пользователя."""
-    if user_id not in user_states:
-        user_states[user_id] = {
-            'quiz_active': False,
-            'current_word': None,
-            'quiz_options': [],
-            'awaiting_word': False,
-            'awaiting_translation': False,
-            'awaiting_delete': False
-        }
-    return user_states[user_id]
-
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /start."""
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /start"""
     user = update.effective_user
-    user_id = user.id
     
     # Добавляем пользователя в БД
-    repo.add_user(
-        user_id=user_id,
-        username=user.username,
-        first_name=user.first_name,
-        last_name=user.last_name
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
+        (user.id, user.username, user.first_name)
     )
+    conn.commit()
+    conn.close()
     
-    # Приветственное сообщение
     welcome_text = f"""
 👋 Привет, {user.first_name}!
 
-Я бот для изучения английских слов. Я помогу тебе:
-• Учить слова с помощью квизов
-• Добавлять свои слова
-• Отслеживать прогресс
+Я бот для изучения английских слов!
 
 📚 Доступные команды:
-/start - Начать работу с ботом
-/learn - Начать изучение слов
-/addword - Добавить новое слово
-/mywords - Показать мои слова
+/start - Начать работу
+/learn - Учить слова (квиз)
+/addword - Добавить своё слово
+/mywords - Мои слова
 /deleteword - Удалить слово
-/stats - Статистика обучения
-/help - Помощь по командам
+/help - Помощь
 
-Выбери команду из меню или напиши /learn чтобы начать учить слова! 🎯
+Нажми /learn чтобы начать учить слова! 🎯
     """
     
     await update.message.reply_text(welcome_text)
 
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /help."""
+    """Обработчик команды /help"""
     help_text = """
 📖 Помощь по командам:
 
-/start - Начать работу с ботом
-/learn - Начать изучение слов (квиз с 4 вариантами ответа)
-/addword - Добавить новое слово в свой словарь
-/mywords - Показать все ваши слова
-/deleteword - Удалить слово из вашего словаря
-/stats - Показать статистику обучения
+/start - Начать работу
+/learn - Учить слова (4 варианта ответа)
+/addword - Добавить своё слово
+/mywords - Показать мои слова
+/deleteword - Удалить моё слово
 /help - Эта справка
 
-💡 Как работает бот:
-1. Используйте /learn для начала квиза
-2. Вам показывается русское слово и 4 варианта на английском
-3. Выбираете правильный перевод
-4. За правильные ответы растет ваша статистика
+💡 Как работает:
+1. /learn - начинается квиз
+2. Показывается русское слово
+3. Выбираете правильный английский вариант
+4. Учите и запоминаете!
 
-✏️ Добавление слов:
-1. Используйте /addword
+✏️ Добавить слово:
+1. /addword
 2. Введите английское слово
 3. Введите русский перевод
-4. Слово добавится в ваш личный словарь
 
-🗑️ Удаление слов:
-Используйте /deleteword и введите английское слово для удаления
-
-Удачи в изучении английского! 🎓
+🗑️ Удалить слово:
+1. /deleteword
+2. Введите английское слово
     """
-    
     await update.message.reply_text(help_text)
 
-
-async def learn_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /learn - начало квиза."""
-    user_id = update.effective_user.id
-    state = get_user_state(user_id)
+async def learn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /learn - начало квиза"""
+    conn = db.get_connection()
+    cursor = conn.cursor()
     
     # Получаем случайное слово
-    word = repo.get_random_standard_word()
+    cursor.execute("SELECT english, russian FROM standard_words ORDER BY RANDOM() LIMIT 1")
+    word = cursor.fetchone()
+    
     if not word:
-        await update.message.reply_text("❌ В базе данных нет слов для изучения.")
+        await update.message.reply_text("❌ Нет слов для изучения")
+        conn.close()
         return
     
-    # Получаем варианты ответов
-    options = repo.get_random_word_options(word, 4)
-    if len(options) < 4:
-        await update.message.reply_text("❌ Недостаточно слов для создания квиза.")
-        return
+    correct_word = dict(word)
     
-    # Сохраняем состояние
-    state['quiz_active'] = True
-    state['current_word'] = word
-    state['quiz_options'] = options
+    # Получаем 3 неправильных варианта
+    cursor.execute(
+        "SELECT english FROM standard_words WHERE english != ? ORDER BY RANDOM() LIMIT 3",
+        (correct_word['english'],)
+    )
+    wrong_options = [row['english'] for row in cursor.fetchall()]
     
-    # Создаем клавиатуру с вариантами
+    conn.close()
+    
+    # Создаем 4 варианта (1 правильный + 3 неправильных)
+    options = wrong_options + [correct_word['english']]
+    random.shuffle(options)
+    
+    # Создаем кнопки
     keyboard = []
     for option in options:
-        keyboard.append([InlineKeyboardButton(
-            option['english'],
-            callback_data=f"quiz_{option['english']}"
-        )])
+        keyboard.append([InlineKeyboardButton(option, callback_data=f"quiz_{option}")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Отправляем вопрос
-    question_text = f"📚 Переведите слово:\n\n🔹 *{word['russian']}*"
+    # Сохраняем правильный ответ для проверки
+    context.user_data['correct_answer'] = correct_word['english']
+    context.user_data['russian_word'] = correct_word['russian']
+    
     await update.message.reply_text(
-        question_text,
+        f"📚 Переведите слово:\n\n🔹 *{correct_word['russian']}*",
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
-
 
 async def quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик callback'ов от квиза."""
+    """Обработчик ответов на квиз"""
     query = update.callback_query
-    user_id = update.effective_user.id
-    state = get_user_state(user_id)
-    
     await query.answer()
     
-    if not state['quiz_active'] or not state['current_word']:
-        await query.edit_message_text("❌ Сессия квиза завершена. Используйте /learn чтобы начать заново.")
-        return
+    selected = query.data.replace('quiz_', '')
+    correct = context.user_data.get('correct_answer', '')
+    russian = context.user_data.get('russian_word', '')
     
-    # Получаем выбранный вариант
-    selected_english = query.data.replace('quiz_', '')
-    correct_word = state['current_word']
-    is_correct = selected_english == correct_word['english']
-    
-    # Обновляем статистику
-    repo.update_learning_stats(
-        user_id=user_id,
-        word_id=correct_word['id'],
-        word_type='standard',
-        is_correct=is_correct
-    )
-    
-    # Формируем ответ
-    if is_correct:
-        result_text = "✅ *Правильно!* 🎉\n\n"
-        result_text += f"*{correct_word['russian']}* = *{correct_word['english']}*"
+    if selected == correct:
+        await query.edit_message_text(
+            f"✅ *Правильно!*\n\n*{russian}* = *{correct}*",
+            parse_mode='Markdown'
+        )
     else:
-        result_text = "❌ *Неправильно!*\n\n"
-        result_text += f"Правильный ответ: *{correct_word['english']}*\n"
-        result_text += f"*{correct_word['russian']}* = *{correct_word['english']}*"
+        await query.edit_message_text(
+            f"❌ *Неправильно!*\n\nПравильный ответ: *{correct}*\n*{russian}* = *{correct}*",
+            parse_mode='Markdown'
+        )
     
-    # Добавляем кнопку для следующего слова
+    # Кнопка для следующего слова
     keyboard = [[InlineKeyboardButton("➡️ Следующее слово", callback_data="next_word")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        result_text,
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+    await query.message.reply_text(
+        "Хотите продолжить?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
-
 
 async def next_word_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик для перехода к следующему слову."""
+    """Обработчик для следующего слова"""
     query = update.callback_query
-    user_id = update.effective_user.id
-    
     await query.answer()
     
-    # Получаем новое случайное слово
-    word = repo.get_random_standard_word()
+    # Удаляем предыдущее сообщение
+    await query.delete_message()
+    
+    # Запускаем новый квиз
+    await learn_with_message(query.message, context)
+
+async def learn_with_message(message, context):
+    """Вспомогательная функция для запуска квиза"""
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT english, russian FROM standard_words ORDER BY RANDOM() LIMIT 1")
+    word = cursor.fetchone()
+    
     if not word:
-        await query.edit_message_text("❌ В базе данных нет слов для изучения.")
+        await message.reply_text("❌ Нет слов для изучения")
+        conn.close()
         return
     
-    # Получаем варианты ответов
-    options = repo.get_random_word_options(word, 4)
-    if len(options) < 4:
-        await query.edit_message_text("❌ Недостаточно слов для создания квиза.")
-        return
+    correct_word = dict(word)
     
-    # Обновляем состояние
-    state = get_user_state(user_id)
-    state['current_word'] = word
-    state['quiz_options'] = options
+    cursor.execute(
+        "SELECT english FROM standard_words WHERE english != ? ORDER BY RANDOM() LIMIT 3",
+        (correct_word['english'],)
+    )
+    wrong_options = [row['english'] for row in cursor.fetchall()]
     
-    # Создаем новую клавиатуру
+    conn.close()
+    
+    options = wrong_options + [correct_word['english']]
+    random.shuffle(options)
+    
     keyboard = []
     for option in options:
-        keyboard.append([InlineKeyboardButton(
-            option['english'],
-            callback_data=f"quiz_{option['english']}"
-        )])
+        keyboard.append([InlineKeyboardButton(option, callback_data=f"quiz_{option}")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Отправляем новый вопрос
-    question_text = f"📚 Переведите слово:\n\n🔹 *{word['russian']}*"
-    await query.edit_message_text(
-        question_text,
+    context.user_data['correct_answer'] = correct_word['english']
+    context.user_data['russian_word'] = correct_word['russian']
+    
+    await message.reply_text(
+        f"📚 Переведите слово:\n\n🔹 *{correct_word['russian']}*",
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
 
-
-async def addword_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /addword - начало добавления слова."""
+async def addword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /addword"""
     user_id = update.effective_user.id
-    state = get_user_state(user_id)
-    
-    state['awaiting_word'] = True
-    state['awaiting_translation'] = False
-    state['awaiting_delete'] = False
+    user_states[user_id] = {'expecting_english': True}
     
     await update.message.reply_text(
-        "✏️ *Добавление нового слова*\n\n"
-        "Введите английское слово:",
+        "✏️ *Добавление нового слова*\n\nВведите английское слово:",
         parse_mode='Markdown'
     )
 
-
-async def deleteword_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /deleteword - удаление слова."""
+async def deleteword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /deleteword"""
     user_id = update.effective_user.id
-    state = get_user_state(user_id)
+    user_states[user_id] = {'expecting_delete': True}
     
-    # Получаем слова пользователя
-    user_words = repo.get_user_words(user_id)
-    
-    if not user_words:
-        await update.message.reply_text("📭 У вас пока нет своих слов для удаления.")
-        return
-    
-    state['awaiting_word'] = False
-    state['awaiting_translation'] = False
-    state['awaiting_delete'] = True
-    
-    # Показываем список слов для удаления
-    words_list = "\n".join([f"• {word['english']} - {word['russian']}" 
-                           for word in user_words[:10]])  # Показываем первые 10
-    
-    await update.message.reply_text(
-        f"🗑️ *Удаление слова*\n\n"
-        f"Ваши слова:\n{words_list}\n\n"
-        f"Введите английское слово для удаления:",
-        parse_mode='Markdown'
+    # Показываем слова пользователя
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT english, russian FROM user_words WHERE user_id = ?",
+        (user_id,)
     )
+    words = cursor.fetchall()
+    conn.close()
+    
+    if words:
+        words_list = "\n".join([f"• {w['english']} - {w['russian']}" for w in words[:5]])
+        text = f"🗑️ *Удаление слова*\n\nВаши слова:\n{words_list}\n\nВведите английское слово для удаления:"
+    else:
+        text = "📭 У вас нет своих слов.\nВведите английское слово для удаления (если добавите потом):"
+    
+    await update.message.reply_text(text, parse_mode='Markdown')
 
-
-async def mywords_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /mywords - показать слова пользователя."""
+async def mywords(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /mywords"""
     user_id = update.effective_user.id
     
-    # Получаем слова пользователя
-    user_words = repo.get_user_words(user_id)
-    word_count = repo.get_user_word_count(user_id)
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT english, russian, created_at FROM user_words WHERE user_id = ? ORDER BY created_at DESC",
+        (user_id,)
+    )
+    words = cursor.fetchall()
+    conn.close()
     
-    if not user_words:
+    if not words:
         await update.message.reply_text("📭 У вас пока нет своих слов. Используйте /addword чтобы добавить.")
         return
     
-    # Формируем список слов
-    words_text = f"📚 *Ваши слова* ({word_count} слов):\n\n"
+    text = f"📚 *Ваши слова* ({len(words)}):\n\n"
+    for i, word in enumerate(words, 1):
+        text += f"{i}. *{word['english']}* - {word['russian']}\n"
     
-    for i, word in enumerate(user_words[:50], 1):  # Ограничиваем 50 словами
-        date_str = datetime.strptime(word['created_at'], '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y')
-        words_text += f"{i}. *{word['english']}* - {word['russian']}"
-        if word.get('category'):
-            words_text += f" ({word['category']})"
-        words_text += f" - добавлено {date_str}\n"
-    
-    if len(user_words) > 50:
-        words_text += f"\n... и еще {len(user_words) - 50} слов"
-    
-    await update.message.reply_text(words_text, parse_mode='Markdown')
-
-
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /stats - статистика обучения."""
-    user_id = update.effective_user.id
-    
-    # Получаем статистику
-    stats = repo.get_user_stats(user_id)
-    
-    # Формируем текст статистики
-    stats_text = f"📊 *Статистика обучения*\n\n"
-    stats_text += f"👤 Пользователь: {update.effective_user.first_name}\n"
-    stats_text += f"📅 Дата: {datetime.now().strftime('%d.%m.%Y')}\n\n"
-    
-    stats_text += f"🎯 *Общая статистика:*\n"
-    stats_text += f"• Изучено слов: {stats['words_learned']}\n"
-    stats_text += f"• Ваших слов: {stats['user_words_count']}\n"
-    stats_text += f"• Правильных ответов: {stats['total_correct']}/{stats['total_attempts']}\n"
-    stats_text += f"• Успешность: {stats['success_rate']}%\n\n"
-    
-    stats_text += f"📈 *Сегодня:*\n"
-    stats_text += f"• Вопросов: {stats['today_questions']}\n"
-    stats_text += f"• Правильных: {stats['today_correct']}\n"
-    
-    if stats['today_questions'] > 0:
-        today_rate = round((stats['today_correct'] / stats['today_questions']) * 100, 1)
-        stats_text += f"• Успешность: {today_rate}%\n"
-    
-    stats_text += f"\n💪 Продолжайте в том же духе!"
-    
-    await update.message.reply_text(stats_text, parse_mode='Markdown')
-
+    await update.message.reply_text(text, parse_mode='Markdown')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик текстовых сообщений."""
+    """Обработчик всех текстовых сообщений"""
     user_id = update.effective_user.id
     text = update.message.text.strip()
-    state = get_user_state(user_id)
     
-    # Если пользователь добавляет слово
-    if state['awaiting_word'] and not state['awaiting_translation']:
-        if len(text.split()) > 3:
-            await update.message.reply_text("❌ Слишком длинный текст. Введите одно английское слово:")
-            return
-        
-        state['english_word'] = text.lower()
-        state['awaiting_word'] = False
-        state['awaiting_translation'] = True
-        
-        await update.message.reply_text(
-            f"Английское слово: *{text}*\n\n"
-            f"Теперь введите перевод на русский:",
-            parse_mode='Markdown'
-        )
+    if user_id not in user_states:
+        await update.message.reply_text("Используйте команды из меню или /help")
         return
     
-    # Если пользователь вводит перевод
-    elif state['awaiting_translation']:
-        english_word = state.get('english_word', '')
+    state = user_states[user_id]
+    
+    # Добавление слова
+    if state.get('expecting_english'):
+        # Пользователь ввел английское слово
+        state['english'] = text.lower()
+        state['expecting_english'] = False
+        state['expecting_russian'] = True
+        
+        await update.message.reply_text(
+            f"Английское слово: *{text}*\n\nТеперь введите перевод на русский:",
+            parse_mode='Markdown'
+        )
+    
+    elif state.get('expecting_russian'):
+        # Пользователь ввел русский перевод
+        english_word = state.get('english', '')
         
         if not english_word:
-            state['awaiting_translation'] = False
-            await update.message.reply_text("❌ Ошибка. Начните заново с /addword")
+            await update.message.reply_text("Ошибка. Начните заново: /addword")
+            del user_states[user_id]
             return
         
         # Добавляем слово в БД
-        success, message = repo.add_user_word(
-            user_id=user_id,
-            english=english_word,
-            russian=text
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute(
+                "INSERT INTO user_words (user_id, english, russian) VALUES (?, ?, ?)",
+                (user_id, english_word, text)
+            )
+            conn.commit()
+            
+            # Считаем сколько слов у пользователя
+            cursor.execute(
+                "SELECT COUNT(*) as count FROM user_words WHERE user_id = ?",
+                (user_id,)
+            )
+            count = cursor.fetchone()['count']
+            
+            await update.message.reply_text(
+                f"✅ Слово добавлено!\n\n*{english_word}* - {text}\n\nВсего ваших слов: *{count}*",
+                parse_mode='Markdown'
+            )
+            
+        except sqlite3.IntegrityError:
+            await update.message.reply_text(
+                f"❌ Слово *{english_word}* уже есть в вашем словаре",
+                parse_mode='Markdown'
+            )
+        
+        finally:
+            conn.close()
+            del user_states[user_id]
+    
+    # Удаление слова
+    elif state.get('expecting_delete'):
+        word_to_delete = text.lower()
+        
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "DELETE FROM user_words WHERE user_id = ? AND english = ?",
+            (user_id, word_to_delete)
         )
+        deleted = cursor.rowcount > 0
+        conn.commit()
         
-        # Сбрасываем состояние
-        state['awaiting_word'] = False
-        state['awaiting_translation'] = False
-        state['english_word'] = None
+        # Считаем оставшиеся слова
+        cursor.execute(
+            "SELECT COUNT(*) as count FROM user_words WHERE user_id = ?",
+            (user_id,)
+        )
+        remaining = cursor.fetchone()['count']
+        conn.close()
         
-        await update.message.reply_text(message, parse_mode='Markdown')
-        return
+        if deleted:
+            await update.message.reply_text(
+                f"✅ Слово *{word_to_delete}* удалено!\n\nОсталось слов: *{remaining}*",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Слово *{word_to_delete}* не найдено в вашем словаре",
+                parse_mode='Markdown'
+            )
+        
+        del user_states[user_id]
     
-    # Если пользователь удаляет слово
-    elif state['awaiting_delete']:
-        success, message = repo.delete_user_word(user_id=user_id, english=text.lower())
-        
-        # Сбрасываем состояние
-        state['awaiting_delete'] = False
-        
-        await update.message.reply_text(message, parse_mode='Markdown')
-        return
-    
-    # Если это обычное сообщение
     else:
-        await update.message.reply_text(
-            "🤔 Я не понимаю эту команду.\n\n"
-            "Используйте /help чтобы увидеть список доступных команд."
-        )
-
+        await update.message.reply_text("Используйте команды из меню или /help")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик ошибок."""
-    logger.error(f"Ошибка при обработке обновления: {context.error}")
+    """Обработчик ошибок"""
+    logger.error(f"Ошибка: {context.error}")
     
     if update.effective_message:
         await update.effective_message.reply_text(
             "❌ Произошла ошибка. Пожалуйста, попробуйте еще раз."
         )
 
-
 def main() -> None:
-    """Основная функция запуска бота."""
+    """Запуск бота"""
     # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Регистрируем обработчики команд
-    application.add_handler(CommandHandler("start", start_command))
+    # Регистрируем команды
+    application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("learn", learn_command))
-    application.add_handler(CommandHandler("addword", addword_command))
-    application.add_handler(CommandHandler("deleteword", deleteword_command))
-    application.add_handler(CommandHandler("mywords", mywords_command))
-    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("learn", learn))
+    application.add_handler(CommandHandler("addword", addword))
+    application.add_handler(CommandHandler("deleteword", deleteword))
+    application.add_handler(CommandHandler("mywords", mywords))
     
-    # Регистрируем обработчики callback'ов
+    # Регистрируем обработчики кнопок
     application.add_handler(CallbackQueryHandler(quiz_callback, pattern="^quiz_"))
     application.add_handler(CallbackQueryHandler(next_word_callback, pattern="^next_word"))
     
     # Регистрируем обработчик текстовых сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Регистрируем обработчик ошибок
+    # Обработчик ошибок
     application.add_error_handler(error_handler)
     
     # Запускаем бота
-    logger.info("Бот запущен...")
+    print("🤖 Бот запущен...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == '__main__':
     main()
