@@ -395,73 +395,55 @@ class Repository:
             logger.error(f"Ошибка при обновлении статистики: {e}")
             return False
     
-    def get_user_stats(self, user_id: int) -> Dict:
-        """Получение статистики пользователя."""
+        def get_wrong_options(self, correct_word, count=3):
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT english FROM standard_words WHERE english != ? ORDER BY RANDOM() LIMIT ?",
+            (correct_word, count)
+        )
+        options = [row['english'] for row in cursor.fetchall()]
+        conn.close()
+        return options
+    
+    def add_user_word(self, user_id, english, russian, category=None):
+        """Добавление пользовательского слова"""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
         try:
-            with self.db.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                # Общая статистика
-                cursor.execute(
-                    """
-                    SELECT 
-                        SUM(correct_answers) as total_correct,
-                        SUM(total_attempts) as total_attempts,
-                        COUNT(DISTINCT word_id) as words_learned
-                    FROM learning_stats 
-                    WHERE user_id = ?
-                    """,
-                    (user_id,)
-                )
-                
-                stats = cursor.fetchone()
-                
-                # Статистика за сегодня
-                today = date.today()
-                cursor.execute(
-                    """
-                    SELECT total_questions, correct_answers 
-                    FROM learning_sessions 
-                    WHERE user_id = ? AND session_date = ?
-                    """,
-                    (user_id, today)
-                )
-                
-                today_stats = cursor.fetchone()
-                
-                result = {
-                    'total_correct': stats['total_correct'] or 0,
-                    'total_attempts': stats['total_attempts'] or 0,
-                    'words_learned': stats['words_learned'] or 0,
-                    'user_words_count': self.get_user_word_count(user_id)
-                }
-                
-                # Рассчитываем процент правильных ответов
-                if result['total_attempts'] > 0:
-                    result['success_rate'] = round(
-                        (result['total_correct'] / result['total_attempts']) * 100, 1
-                    )
-                else:
-                    result['success_rate'] = 0
-                
-                # Добавляем статистику за сегодня
-                if today_stats:
-                    result['today_questions'] = today_stats['total_questions']
-                    result['today_correct'] = today_stats['correct_answers']
-                else:
-                    result['today_questions'] = 0
-                    result['today_correct'] = 0
-                
-                return result
-                
+            cursor.execute(
+                "INSERT INTO user_words (user_id, english, russian, category) VALUES (?, ?, ?, ?)",
+                (user_id, english.lower(), russian, category)
+            )
+            conn.commit()
+            return True
         except Exception as e:
-            logger.error(f"Ошибка при получении статистики: {e}")
-            return {
-                'total_correct': 0,
-                'total_attempts': 0,
-                'words_learned': 0,
-                'user_words_count': 0,
-                'success_rate': 0,
-                'today_questions': 0,
-                'today_correct': 0
-            }
+            print(f"Error: {e}")
+            return False
+        finally:
+            conn.close()
+    
+    def delete_user_word(self, user_id, english):
+        """Удаление пользовательского слова"""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM user_words WHERE user_id = ? AND english = ?",
+            (user_id, english.lower())
+        )
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return deleted
+    
+    def get_user_words(self, user_id):
+        """Получение слов пользователя"""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT english, russian, category FROM user_words WHERE user_id = ?",
+            (user_id,)
+        )
+        words = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return words
