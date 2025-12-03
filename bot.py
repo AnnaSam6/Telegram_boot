@@ -5,7 +5,9 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 
 from config import BOT_TOKEN
 from database import Database
-
+from config import BOT_TOKEN, ADMIN_IDS 
+from database import Database  
+from repository import Repository 
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
