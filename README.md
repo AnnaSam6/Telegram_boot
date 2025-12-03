@@ -13,47 +13,38 @@ Telegram-бот для изучения английских слов с пом�
 
 ## 🗄️ Структура базы данных
 
+### ER-диаграмма:
 ```mermaid
 erDiagram
-    users ||--o{ user_words : has
-    users ||--o{ learning_stats : tracks
-    word_categories ||--o{ base_words : contains
+    users ||--o{ user_words : "добавляет"
+    users ||--o{ learning_stats : "имеет"
     
     users {
-        bigint telegram_id PK
+        bigint telegram_id
         varchar username
         varchar first_name
-        varchar last_name
         timestamp created_at
     }
     
-    word_categories {
-        int id PK
-        varchar name
-        text description
-    }
-    
     base_words {
-        int id PK
+        int id
         varchar russian
         varchar english
-        int category_id FK
+        varchar category
     }
     
     user_words {
-        int id PK
-        int user_id FK
+        int id
+        int user_id
         varchar russian
         varchar english
         timestamp created_at
     }
     
     learning_stats {
-        int id PK
-        int user_id FK
+        int id
+        int user_id
         int word_id
-        varchar word_type
         int correct_answers
         int wrong_answers
-        timestamp last_practiced
     }
