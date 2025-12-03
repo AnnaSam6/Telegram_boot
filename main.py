@@ -1,41 +1,32 @@
-import logging
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from config import BOT_TOKEN
+# УДАЛИТЬ эти функции:
+def load_words():
+def load_user_words(user_id):
+def save_user_words(user_id, words):
 
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# ДОБАВИТЬ:
+from database import Database
 
-async def start(update, context):
-    """Обработчик команды /start"""
+db = Database()
+
+# В обработчике start:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    await update.message.reply_html(
-        f"👋 Привет, {user.first_name}!\n\n"
-        f"Добро пожаловать в EnglishCard - бота для изучения английских слов!\n\n"
-        f"📚 Доступные команды:\n"
-        f"/start - Начало работы\n"
-        f"/learn - Начать изучение\n"
-        f"/add_word - Добавить слово\n"
-        f"/delete_word - Удалить слово\n"
-        f"/stats - Статистика\n"
-        f"/help - Помощь"
-    )
+    # Сохраняем пользователя в БД
+    db.add_user(user.id, user.username, user.first_name)
+    # ... остальной код
 
-def main():
-    """Запуск бота"""
-    # Создаем приложение
-    application = Application.builder().token(BOT_TOKEN).build()
+# В обработчике add_word:
+async def add_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    # Получаем данные из сообщения
+    text = update.message.text
+    parts = text.split('-')
     
-    # Регистрируем обработчики
-    application.add_handler(CommandHandler("start", start))
-    
-    # Запускаем бота
-    logger.info("Бот запущен...")
-    application.run_polling()
-
-if __name__ == '__main__':
-    main()
-    main()
+    if len(parts) == 2:
+        russian, english = parts[0].strip(), parts[1].strip()
+        # Сохраняем в БД
+        success = db.add_user_word(user_id, russian, english)
+        if success:
+            await update.message.reply_text(f"Слово '{russian}' добавлено!")
+        else:
+            await update.message.reply_text("Ошибка при добавлении слова")
