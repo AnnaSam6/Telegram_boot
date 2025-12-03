@@ -1,0 +1,19 @@
+# Виртуальное окружение
+venv/
+.env/
+.env.local
+
+# Питон
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# БД
+*.db
+*.sqlite3
