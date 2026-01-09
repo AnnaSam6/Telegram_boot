@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-def get_db_connection():
+def get_db():
     """Создает и возвращает соединение с базой данных PostgreSQL."""
     return psycopg2.connect(
         host=os.getenv('DB_HOST'),
