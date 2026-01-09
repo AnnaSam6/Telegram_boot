@@ -1,10 +1,10 @@
 import logging
 import random
 import os
-import psycopg2
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters, ConversationHandler
 from dotenv import load_dotenv
+from database import get_db  # Импорт функции подключения из database.py
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -12,15 +12,6 @@ logger = logging.getLogger(__name__)
 
 # Состояния для ConversationHandler
 WAITING_WORD, WAITING_DELETE = range(2)
-
-# Подключение к PostgreSQL
-def get_db():
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST", "localhost"),
-        database=os.getenv("DB_NAME", "english_bot_db"),
-        user=os.getenv("DB_USER", "postgres"),
-        password=os.getenv("DB_PASSWORD", "postgres")
-    )
 
 # Создание ВСЕХ 4 таблиц
 def init_db():
